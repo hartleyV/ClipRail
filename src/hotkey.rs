@@ -134,8 +134,13 @@ pub struct HotkeyService {
 
 impl HotkeyService {
     pub fn new() -> Self {
+        // 某些环境（无 X11 / 权限受限 / 远程桌面）下创建管理器可能直接 panic，
+        // 这里捕获后降级为“无全局快捷键”，程序继续正常运行。
+        let manager = std::panic::catch_unwind(GlobalHotKeyManager::new)
+            .ok()
+            .and_then(|r| r.ok());
         Self {
-            manager: GlobalHotKeyManager::new().ok(),
+            manager,
             current: None,
         }
     }
@@ -153,11 +158,16 @@ impl HotkeyService {
             .ok_or_else(|| "当前系统不支持全局快捷键，可使用 ClipRail --toggle".to_string())?;
 
         if let Some(old) = self.current.take() {
-            let _ = manager.unregister(old);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = manager.unregister(old);
+            }));
         }
-        manager
-            .register(hotkey)
-            .map_err(|e| format!("快捷键注册失败（可能与其他程序冲突）：{}", e))?;
+        // 注册失败既可能返回 Err，也可能在个别平台上 panic，两种情况都要挡住
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            manager.register(hotkey)
+        }))
+        .map_err(|_| "快捷键注册失败（系统拒绝），可在设置中更换".to_string())?;
+        result.map_err(|e| format!("快捷键注册失败（可能与其他程序冲突）：{}", e))?;
         self.current = Some(hotkey);
         Ok(hotkey.id())
     }

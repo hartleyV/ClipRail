@@ -36,8 +36,10 @@ pub struct DragState {
 }
 
 /// 拖动左边缘调宽时的基准：右边缘保持不动
+/// 拖动过程中只记录 preview（不变动窗口），松开鼠标后一次性应用
 pub struct ResizeState {
     pub right: f32,
+    pub preview: f32,
 }
 
 pub enum Action {
@@ -573,9 +575,10 @@ impl App {
     }
 
     /// 左侧边缘拖动调整宽度（300–800 px）。
-    /// 采用“右边缘固定 + 绝对位置计算”，不累加增量，因此不会因为
-    /// 窗口移动与鼠标坐标互相影响而产生抖动；平时不绘制任何竖线，
-    /// 只在鼠标移到边缘时切换为左右拉伸光标。
+    /// 拖动过程中**不**变动窗口（避免每帧重建窗口导致的卡顿），
+    /// 只画一条轻量预览线；松开鼠标时一次性计算并立即应用新宽度。
+    /// 采用“右边缘固定 + 绝对位置计算”，不累加增量，因此不会抖动；
+    /// 平时不绘制任何竖线，只在鼠标移到边缘时切换为左右拉伸光标。
     fn width_resizer(&mut self, ctx: &egui::Context) {
         let screen = ctx.screen_rect();
         egui::Area::new(egui::Id::new("cliprail_resizer"))
@@ -591,20 +594,43 @@ impl App {
                 }
 
                 if response.drag_started() {
+                    let width = self.settings.clamped_width();
                     self.resize = Some(ResizeState {
-                        right: self.settings.x + self.settings.clamped_width(),
+                        right: self.settings.x + width,
+                        preview: width,
                     });
                 }
 
                 if response.dragged() {
+                    // 只更新预览值，不发送任何窗口命令
                     let pointer = ui.ctx().input(|i| i.pointer.latest_pos());
-                    if let (Some(state), Some(p)) = (self.resize.as_ref(), pointer) {
+                    let base_x = self.settings.x;
+                    if let (Some(state), Some(p)) = (self.resize.as_mut(), pointer) {
                         // 鼠标在屏幕上的位置 = 窗口左边 + 窗口内坐标
-                        let global_x = self.settings.x + p.x;
-                        let new_width = (state.right - global_x).clamp(300.0, 800.0).round();
+                        let global_x = base_x + p.x;
+                        state.preview = (state.right - global_x).clamp(300.0, 800.0).round();
+                    }
+                    // 预览线：标记松开后的左边缘位置
+                    if let Some(state) = self.resize.as_ref() {
+                        let current = self.settings.clamped_width();
+                        let guide_x = screen.left() + (current - state.preview).max(0.0);
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(guide_x, screen.top()),
+                                egui::vec2(2.0, screen.height()),
+                            ),
+                            0.0,
+                            crate::ui::theme::ACCENT,
+                        );
+                    }
+                }
+
+                if response.drag_stopped() {
+                    // 松开鼠标：一次性计算并应用
+                    if let Some(state) = self.resize.take() {
+                        let new_width = state.preview.clamp(300.0, 800.0).round();
                         let new_x = (state.right - new_width).round();
-                        // 2 px 死区：避免因一帧延迟引起的来回振荡
-                        if (new_width - self.settings.width).abs() >= 2.0 {
+                        if (new_width - self.settings.width).abs() >= 1.0 {
                             self.settings.width = new_width;
                             self.settings.x = new_x;
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::OuterPosition(
@@ -613,16 +639,11 @@ impl App {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
                                 egui::vec2(new_width, self.settings.height),
                             ));
-                            self.geometry_hold = Instant::now();
                             self.mark_dirty();
                         }
                     }
-                }
-
-                if response.drag_stopped() {
-                    self.resize = None;
                     self.geometry_hold = Instant::now();
-                    self.mark_dirty();
+                    ui.ctx().request_repaint();
                 }
             });
     }
