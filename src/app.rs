@@ -504,12 +504,10 @@ impl App {
         }
     }
 
-    /// 一次性恢复位置 / 尺寸 / 可见性，不分多帧逐步展开，避免闪烁与拖影
+    /// 一次性恢复位置 / 尺寸 / 可见性，不分多帧逐步展开，避免闪烁与拖影。
+    /// 无论内部标记如何，都会完整重发一次窗口命令：
+    /// 避免标记与系统实际窗口状态不同步时“什么都不发”而唤不出来。
     fn show_panel(&mut self, ctx: &egui::Context) {
-        if !self.hidden && !self.collapsed {
-            self.last_active = Instant::now();
-            return;
-        }
         self.hidden = false;
         self.collapsed = false;
         self.last_active = Instant::now();
@@ -709,33 +707,37 @@ impl App {
         }
     }
 
-    /// 窗口内部的快捷键：直接从输入事件中“消费”掉该组合键，
-    /// 因此它的优先级高于输入框等任何控件，不会被吸走。
-    fn poll_local_hotkey(&mut self, ctx: &egui::Context) {
-        let combo = match crate::hotkey::parse_egui(&self.settings.hotkey) {
-            Some(combo) => combo,
-            None => return,
-        };
-        let pressed = ctx.input_mut(|i| i.consume_key(combo.0, combo.1));
-        if pressed && self.last_hotkey.elapsed() > Duration::from_millis(200) {
-            self.last_hotkey = Instant::now();
-            self.toggle_panel(ctx);
-        }
-    }
+    /// 快捷键统一入口：窗口内按键（优先级最高，直接 consume）与
+    /// 全局热键合并处理。一次物理按键会产生多个事件（按下 + 松开，
+    /// 两条通道各一份），这里把一帧内的事件全部取走、最多只切换一次，
+    /// 并用 500ms 去抖。这样即使因为置顶 / 拖拽 / 删除后写盘造成掉帧，
+    /// “按下”与“松开”落在不同帧里，也不会被当成两次而“刚显示又隐藏”。
+    fn poll_hotkeys(&mut self, ctx: &egui::Context) {
+        let mut requested = false;
 
-    fn poll_hotkey(&mut self, ctx: &egui::Context) {
+        if let Some((mods, key)) = crate::hotkey::parse_egui(&self.settings.hotkey) {
+            if ctx.input_mut(|i| i.consume_key(mods, key)) {
+                requested = true;
+            }
+        }
+
         while let Ok(event_id) = self.hotkey_rx.try_recv() {
             if let Some(id) = self.hotkey_id {
                 if event_id != id {
                     continue;
                 }
             }
-            // 按下 / 松开会各发一次事件，用时间窗去抱
-            if self.last_hotkey.elapsed() > Duration::from_millis(250) {
-                self.toggle_panel(ctx);
-            }
-            self.last_hotkey = Instant::now();
+            requested = true;
         }
+
+        if !requested {
+            return;
+        }
+        if self.last_hotkey.elapsed() < Duration::from_millis(500) {
+            return;
+        }
+        self.last_hotkey = Instant::now();
+        self.toggle_panel(ctx);
     }
 
     /// `ClipRail --toggle`（Wayland 方案）通过标记文件通知本实例
@@ -766,11 +768,26 @@ impl App {
         if !force && self.last_persist.elapsed() < PERSIST_INTERVAL {
             return;
         }
-        store::save_items(&self.items);
-        store::save_settings(&self.settings);
-        archive::rebuild(&self.items);
         self.dirty = false;
         self.last_persist = Instant::now();
+
+        if force {
+            // 退出时必须同步写完
+            store::save_items(&self.items);
+            store::save_settings(&self.settings);
+            archive::rebuild(&self.items);
+            return;
+        }
+
+        // 置顶 / 拖拽 / 删除后会重写 clips.json 与归档，在 UI 线程上做会造成
+        // 明显掉帧，进而影响按键事件的时序；放到后台线程写。
+        let items = self.items.clone();
+        let settings = self.settings.clone();
+        std::thread::spawn(move || {
+            store::save_items(&items);
+            store::save_settings(&settings);
+            archive::rebuild(&items);
+        });
     }
 }
 
@@ -795,8 +812,7 @@ impl eframe::App for App {
         self.poll_clipboard();
         // 先处理窗口内的快捷键（优先级高于任何控件），
         // 保证鼠标在竖栏范围内 / 窗口获得焦点时按键也能显示隐藏
-        self.poll_local_hotkey(ctx);
-        self.poll_hotkey(ctx);
+        self.poll_hotkeys(ctx);
         self.poll_toggle_file(ctx);
         self.tick_copied();
 
