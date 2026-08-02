@@ -3,37 +3,80 @@ name: Build ClipRail
 on:
   workflow_dispatch:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            artifact: ClipRail-Windows
-            binary: target/release/cliprail.exe
-          - os: ubuntu-22.04
-            artifact: ClipRail-Linux
-            binary: target/release/cliprail
-    runs-on: ${{ matrix.os }}
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev libgtk-3-dev
-      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
       - name: Build release
         run: cargo build --release
-      - name: Stage portable package
-        shell: bash
+
+      - name: Prepare artifact
+        shell: pwsh
         run: |
-          mkdir -p dist/data/images dist/data/archives
-          cp "${{ matrix.binary }}" dist/
-          cp README.md LICENSE dist/
-      - uses: actions/upload-artifact@v4
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/cliprail.exe dist/ClipRail.exe
+
+      - name: Upload ClipRail-Windows
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/
+          name: ClipRail-Windows
+          path: dist/ClipRail.exe
+          if-no-files-found: error
+
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libxcb1-dev
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp target/release/cliprail dist/ClipRail
+          chmod +x dist/ClipRail
+
+      - name: Upload ClipRail-Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipRail-Linux
+          path: dist/ClipRail
+          if-no-files-found: error

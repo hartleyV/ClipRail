@@ -1,197 +1,708 @@
-use crate::{clipboard::{self, ClipWrite}, hotkey, model::{ClipItem, ClipKind, ClipboardEvent, Settings}, store::Store};
-use crossbeam_channel::{unbounded, Receiver, Sender};
-use eframe::egui::{self, Color32, CornerRadius, FontId, Frame, Margin, RichText, Sense, Stroke, Vec2};
-use std::{collections::{BTreeMap, HashSet}, time::{Duration, Instant}};
+//! 应用状态与主循环。
 
-const BLUE: Color32 = Color32::from_rgb(39, 131, 222);
-const TEXT: Color32 = Color32::from_rgb(44, 44, 43);
-const MUTED: Color32 = Color32::from_rgb(112, 109, 104);
-const BORDER: Color32 = Color32::from_rgb(230, 229, 227);
-const SOFT: Color32 = Color32::from_rgb(249, 248, 247);
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
-pub struct ClipRailApp {
-    store: Store,
-    clips: Vec<ClipItem>,
-    settings: Settings,
-    events: Receiver<ClipboardEvent>,
-    write_tx: Sender<ClipWrite>,
-    selected: HashSet<String>,
-    date_filter: String,
-    copied: Option<(String, Instant)>,
-    show_settings: bool,
-    draft_hotkey: String,
-    draft_edge_hide: bool,
-    settings_error: Option<String>,
-    status: Option<String>,
+use crossbeam_channel::{Receiver, Sender};
+use eframe::egui::{self, Pos2};
+use global_hotkey::GlobalHotKeyEvent;
+
+use crate::archive;
+use crate::clipboard::{ClipCommand, ClipEvent};
+use crate::hotkey::HotkeyService;
+use crate::model::{Item, Kind, Settings};
+use crate::store;
+use crate::ui::{settings as settings_ui, sidebar, theme};
+
+const EDGE_STRIP: f32 = 7.0;
+const HIDE_DELAY: Duration = Duration::from_millis(650);
+const COPIED_DURATION: Duration = Duration::from_millis(1000);
+const PERSIST_INTERVAL: Duration = Duration::from_millis(700);
+const TEXTURES_PER_FRAME: usize = 2;
+
+pub fn today_string() -> String {
+    store::format_ts(store::now_ts(), "%Y-%m-%d")
 }
 
-impl ClipRailApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        configure_style(&cc.egui_ctx);
-        let store = Store::portable(); let _ = store.ensure();
-        let settings = store.load_settings();
-        let (tx, events) = unbounded();
-        let (write_tx, write_rx) = unbounded();
-        clipboard::spawn(tx.clone(), write_rx);
-        hotkey::spawn(settings.hotkey.clone(), tx);
-        Self { clips: store.load_clips(), store, draft_hotkey: settings.hotkey.clone(), draft_edge_hide: settings.edge_hide, settings, events, write_tx, selected: HashSet::new(), date_filter: "全部记录".into(), copied: None, show_settings: false, settings_error: None, status: None }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DateFilter {
+    All,
+    Today,
+    Day(String),
+}
+
+pub struct DragState {
+    pub id: String,
+}
+
+pub enum Action {
+    Copy(String),
+    TogglePin(String),
+    ToggleSelect(String),
+    SelectAllVisible,
+    ClearSelection,
+    DeleteSelected,
+    SetFilter(DateFilter),
+    OpenSettings,
+    TogglePanelPin,
+    DragStart(String),
+    DragStop(Option<Pos2>),
+}
+
+pub struct App {
+    pub items: Vec<Item>,
+    pub settings: Settings,
+
+    clip_tx: Sender<ClipCommand>,
+    clip_rx: Receiver<ClipEvent>,
+    hotkeys: HotkeyService,
+    hotkey_id: Option<u32>,
+    last_hotkey: Instant,
+
+    pub textures: HashMap<String, Option<egui::TextureHandle>>,
+    pub visible_ids: HashSet<String>,
+    pub selected: HashSet<String>,
+    pub copied: Option<(String, Instant)>,
+    pub filter: DateFilter,
+
+    pub show_settings: bool,
+    pub draft_hotkey: String,
+    pub draft_edge_hide: bool,
+    pub settings_error: Option<String>,
+    pub hotkey_error: Option<String>,
+
+    pub drag: Option<DragState>,
+    pub rows: Vec<(String, egui::Rect)>,
+
+    last_active: Instant,
+    collapsed: bool,
+    hidden: bool,
+    placed: bool,
+    dirty: bool,
+    last_persist: Instant,
+    last_toggle_check: Instant,
+}
+
+impl App {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        settings: Settings,
+        clip_tx: Sender<ClipCommand>,
+        clip_rx: Receiver<ClipEvent>,
+    ) -> Self {
+        theme::install(&cc.egui_ctx);
+
+        let mut hotkeys = HotkeyService::new();
+        let mut hotkey_error = None;
+        let hotkey_id = match hotkeys.register(&settings.hotkey) {
+            Ok(id) => Some(id),
+            Err(err) => {
+                hotkey_error = Some(format!("{}（可在设置中更换，或使用 ClipRail --toggle）", err));
+                None
+            }
+        };
+
+        let items = store::load_items();
+        archive::rebuild(&items);
+
+        Self {
+            draft_hotkey: settings.hotkey.clone(),
+            draft_edge_hide: settings.edge_hide,
+            items,
+            settings,
+            clip_tx,
+            clip_rx,
+            hotkeys,
+            hotkey_id,
+            last_hotkey: Instant::now() - Duration::from_secs(5),
+            textures: HashMap::new(),
+            visible_ids: HashSet::new(),
+            selected: HashSet::new(),
+            copied: None,
+            filter: DateFilter::All,
+            show_settings: false,
+            settings_error: None,
+            hotkey_error,
+            drag: None,
+            rows: Vec::new(),
+            last_active: Instant::now(),
+            collapsed: false,
+            hidden: false,
+            placed: false,
+            dirty: false,
+            last_persist: Instant::now(),
+            last_toggle_check: Instant::now(),
+        }
     }
 
-    fn handle_events(&mut self, ctx: &egui::Context) {
-        while let Ok(event) = self.events.try_recv() {
-            match event {
-                ClipboardEvent::ToggleWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!ctx.input(|i| i.viewport().focused.unwrap_or(true)))),
-                ClipboardEvent::NewText { text, hash, created } => {
-                    if !self.clips.iter().any(|c| c.hash == hash) {
-                        self.clips.insert(0, ClipItem { id: format!("{created}-{}", &hash[..8]), kind: ClipKind::Text, text, image_path: Default::default(), hash, created, pinned: false });
-                        self.persist();
-                    }
+    // ------------------------------------------------------------ 查询辅助
+
+    pub fn visible_indices(&self) -> Vec<usize> {
+        let today = today_string();
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| match &self.filter {
+                DateFilter::All => true,
+                DateFilter::Today => item.local_date() == today,
+                DateFilter::Day(d) => &item.local_date() == d,
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn filter_label(&self) -> String {
+        match &self.filter {
+            DateFilter::All => format!("全部记录（{}）", self.items.len()),
+            DateFilter::Today => format!("今天（{}）", self.count_for_date(&today_string())),
+            DateFilter::Day(d) => format!("{}（{}）", d, self.count_for_date(d)),
+        }
+    }
+
+    pub fn count_for_date(&self, date: &str) -> usize {
+        self.items
+            .iter()
+            .filter(|i| i.local_date() == date)
+            .count()
+    }
+
+    /// 按日期倒序返回 (日期, 数量)
+    pub fn date_options(&self) -> Vec<(String, usize)> {
+        let mut map: BTreeMap<String, usize> = BTreeMap::new();
+        for item in &self.items {
+            *map.entry(item.local_date()).or_insert(0) += 1;
+        }
+        let mut out: Vec<(String, usize)> = map.into_iter().collect();
+        out.reverse();
+        out
+    }
+
+    // ------------------------------------------------------------ 动作处理
+
+    pub fn apply(&mut self, ctx: &egui::Context, action: Action) {
+        match action {
+            Action::Copy(id) => self.copy_to_clipboard(&id),
+            Action::TogglePin(id) => {
+                if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
+                    item.pinned = !item.pinned;
                 }
-                ClipboardEvent::NewImage { rgba, width, height, hash, created } => {
-                    if !self.clips.iter().any(|c| c.hash == hash) {
-                        match self.store.save_image(&rgba, width, height, created, &hash) {
-                            Ok(path) => { self.clips.insert(0, ClipItem { id: format!("{created}-{}", &hash[..8]), kind: ClipKind::Image, text: String::new(), image_path: path, hash, created, pinned: false }); self.persist(); }
-                            Err(e) => self.status = Some(format!("图片保存失败：{e}")),
+                store::sort_pinned_first(&mut self.items);
+                self.mark_dirty();
+            }
+            Action::ToggleSelect(id) => {
+                if !self.selected.remove(&id) {
+                    self.selected.insert(id);
+                }
+            }
+            Action::SelectAllVisible => {
+                for index in self.visible_indices() {
+                    self.selected.insert(self.items[index].id.clone());
+                }
+            }
+            Action::ClearSelection => self.selected.clear(),
+            Action::DeleteSelected => {
+                let ids: Vec<String> = self.selected.iter().cloned().collect();
+                self.delete_ids(&ids);
+            }
+            Action::SetFilter(filter) => self.filter = filter,
+            Action::OpenSettings => {
+                self.show_settings = true;
+                self.draft_hotkey = self.settings.hotkey.clone();
+                self.draft_edge_hide = self.settings.edge_hide;
+                self.settings_error = None;
+            }
+            Action::TogglePanelPin => {
+                self.settings.panel_pinned = !self.settings.panel_pinned;
+                self.apply_window_level(ctx);
+                self.mark_dirty();
+            }
+            Action::DragStart(id) => self.drag = Some(DragState { id }),
+            Action::DragStop(pointer) => {
+                if let Some(drag) = self.drag.take() {
+                    if let Some(pos) = pointer {
+                        if !ctx.screen_rect().contains(pos) {
+                            self.delete_ids(&[drag.id]);
+                        } else {
+                            self.reorder(&drag.id, pos);
                         }
                     }
                 }
             }
         }
-        if self.copied.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(1)) { self.copied = None; }
     }
 
-    fn persist(&mut self) { if let Err(e) = self.store.save_clips(&self.clips) { self.status = Some(format!("保存失败：{e}")); } }
-    fn ordered_indices(&self) -> Vec<usize> {
-        let mut out: Vec<_> = self.clips.iter().enumerate().filter(|(_, c)| self.matches_date(c)).map(|(i, _)| i).collect();
-        out.sort_by_key(|&i| (!self.clips[i].pinned, i)); out
-    }
-    fn matches_date(&self, clip: &ClipItem) -> bool {
-        self.date_filter == "全部记录" || (self.date_filter == "今天" && clip.date_key() == chrono::Local::now().format("%Y-%m-%d").to_string()) || self.date_filter == clip.date_key()
-    }
-    fn copy_clip(&mut self, index: usize) {
-        let clip = &self.clips[index];
-        let sent = match clip.kind {
-            ClipKind::Text => self.write_tx.send(ClipWrite::Text(clip.text.clone())).is_ok(),
-            ClipKind::Image => match image::open(&clip.image_path) {
-                Ok(image) => {
-                    let image = image.to_rgba8();
-                    self.write_tx.send(ClipWrite::Image {
-                        width: image.width() as usize,
-                        height: image.height() as usize,
-                        rgba: image.into_raw(),
-                    }).is_ok()
-                }
-                Err(_) => false,
-            },
+    fn reorder(&mut self, id: &str, pointer: Pos2) {
+        let target_id = self
+            .rows
+            .iter()
+            .find(|(row_id, rect)| row_id != id && pointer.y < rect.center().y)
+            .map(|(row_id, _)| row_id.clone());
+
+        let from = match self.items.iter().position(|i| i.id == id) {
+            Some(index) => index,
+            None => return,
         };
-        if sent { self.copied = Some((clip.id.clone(), Instant::now())); } else { self.status = Some("无法写入系统剪贴板".into()); }
+        let item = self.items.remove(from);
+        let to = match target_id {
+            Some(tid) => self
+                .items
+                .iter()
+                .position(|i| i.id == tid)
+                .unwrap_or(self.items.len()),
+            None => self.items.len(),
+        };
+        self.items.insert(to.min(self.items.len()), item);
+        store::sort_pinned_first(&mut self.items);
+        self.mark_dirty();
     }
-    fn delete_selected(&mut self) {
-        let ids = self.selected.clone();
-        self.clips.retain(|c| { if ids.contains(&c.id) { self.store.remove_asset(c); false } else { true } });
-        self.selected.clear(); self.persist();
-    }
-}
 
-impl eframe::App for ClipRailApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.handle_events(ctx);
-        ctx.request_repaint_after(Duration::from_millis(120));
-        egui::CentralPanel::default().frame(Frame::new().fill(SOFT).inner_margin(Margin::symmetric(14, 12))).show(ctx, |ui| {
-            self.header(ui, ctx);
-            ui.add_space(10.0);
-            self.toolbar(ui);
-            ui.add_space(10.0);
-            let indices = self.ordered_indices();
-            if indices.is_empty() { empty_state(ui); }
-            else { egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| { for index in indices { self.clip_card(ui, index); ui.add_space(10.0); } }); }
+    fn delete_ids(&mut self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let set: HashSet<&String> = ids.iter().collect();
+        let mut removed_images: Vec<String> = Vec::new();
+        self.items.retain(|item| {
+            if set.contains(&item.id) {
+                if item.kind == Kind::Image {
+                    removed_images.push(item.image_path.clone());
+                }
+                false
+            } else {
+                true
+            }
         });
-        if self.show_settings { self.settings_modal(ctx); }
+        for path in removed_images {
+            store::delete_image(&path);
+        }
+        for id in ids {
+            self.selected.remove(id);
+            self.textures.remove(id);
+        }
+        self.mark_dirty();
     }
-}
 
-impl ClipRailApp {
-    fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let r = ui.horizontal(|ui| {
-            ui.label(RichText::new("ClipRail").font(FontId::proportional(20.0)).strong().color(TEXT));
-            ui.label(RichText::new("本地剪贴板").size(13.0).color(MUTED));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(icon_button("⚙", "设置")).clicked() { self.draft_hotkey = self.settings.hotkey.clone(); self.draft_edge_hide = self.settings.edge_hide; self.settings_error = None; self.show_settings = true; }
-                let label = if self.settings.panel_pinned { "📌" } else { "◒" };
-                if ui.add(icon_button(label, if self.settings.panel_pinned { "取消置顶" } else { "自动隐藏" })).clicked() { self.settings.panel_pinned = !self.settings.panel_pinned; let _ = self.store.save_settings(&self.settings); }
-            });
-        }).response;
-        if r.dragged() { ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag); }
-    }
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        let mut dates = BTreeMap::<String, usize>::new(); for c in &self.clips { *dates.entry(c.date_key()).or_default() += 1; }
-        Frame::new().fill(Color32::WHITE).stroke(Stroke::new(1.0, BORDER)).corner_radius(8.0).inner_margin(Margin::symmetric(10, 7)).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("date_filter").selected_text(format!("{} ({})", self.date_filter, self.ordered_indices().len())).width(132.0).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.date_filter, "全部记录".into(), format!("全部记录 ({})", self.clips.len()));
-                    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                    ui.selectable_value(&mut self.date_filter, "今天".into(), format!("今天 ({})", dates.get(&today).copied().unwrap_or(0)));
-                    for (date, count) in dates.iter().rev() { ui.selectable_value(&mut self.date_filter, date.clone(), format!("{date} ({count})")); }
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let n = self.selected.len();
-                    if n > 0 && ui.add(egui::Button::new(RichText::new(format!("删除 {n}")).color(Color32::WHITE).strong()).fill(Color32::from_rgb(229, 100, 88)).stroke(Stroke::NONE).corner_radius(6.0)).clicked() { self.delete_selected(); }
-                    if ui.link(if n == self.clips.len() && n > 0 { "取消全选" } else { "全选" }).clicked() { if n == self.clips.len() { self.selected.clear(); } else { self.selected = self.clips.iter().filter(|c| self.matches_date(c)).map(|c| c.id.clone()).collect(); } }
-                });
-            });
-        });
-    }
-    fn clip_card(&mut self, ui: &mut egui::Ui, index: usize) {
-        let pinned = self.clips[index].pinned; let id = self.clips[index].id.clone();
-        let copied = self.copied.as_ref().is_some_and(|(x, _)| x == &id);
-        let fill = if pinned { Color32::from_rgb(237, 247, 255) } else { Color32::WHITE };
-        let stroke = if pinned { Stroke::new(1.2, BLUE) } else { Stroke::new(1.0, BORDER) };
-        let inner = Frame::new().fill(fill).stroke(stroke).corner_radius(10.0).inner_margin(Margin::same(12)).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let mut checked = self.selected.contains(&id);
-                if ui.checkbox(&mut checked, "").changed() { if checked { self.selected.insert(id.clone()); } else { self.selected.remove(&id); } }
-                if copied { ui.label(RichText::new("✓ 已复制").size(12.5).strong().color(Color32::WHITE).background_color(Color32::from_rgb(70, 161, 113))); }
-                else { ui.label(RichText::new(if pinned { "已置顶" } else { time_label(self.clips[index].created).as_str() }).size(12.5).color(if pinned { BLUE } else { MUTED })); }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button(if pinned { "取消置顶" } else { "置顶" }).clicked() { self.clips[index].pinned = !pinned; self.persist(); }
-                });
-            });
-            ui.add_space(8.0);
-            match self.clips[index].kind {
-                ClipKind::Text => { let mut text = self.clips[index].text.clone(); ui.add(egui::TextEdit::multiline(&mut text).desired_width(f32::INFINITY).desired_rows(text.lines().count().clamp(2, 8)).interactive(false).frame(false).text_color(TEXT)); }
-                ClipKind::Image => {
-                    if let Ok(img) = image::open(&self.clips[index].image_path) {
-                        let rgba = img.to_rgba8(); let size = [rgba.width() as usize, rgba.height() as usize];
-                        let tex = ui.ctx().load_texture(format!("clip-{id}"), egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()), egui::TextureOptions::LINEAR);
-                        let available = ui.available_width(); let ratio = (available / size[0] as f32).min(1.0); ui.add(egui::Image::new(&tex).fit_to_exact_size(Vec2::new(size[0] as f32 * ratio, size[1] as f32 * ratio).min(Vec2::new(available, 280.0))).corner_radius(6.0));
-                    } else { ui.label(RichText::new("图片���件不可用").color(Color32::from_rgb(229, 100, 88))); }
+    fn copy_to_clipboard(&mut self, id: &str) {
+        let item = match self.items.iter().find(|i| i.id == id) {
+            Some(item) => item.clone(),
+            None => return,
+        };
+        match item.kind {
+            Kind::Text => {
+                let _ = self.clip_tx.send(ClipCommand::SetText(item.text.clone()));
+            }
+            Kind::Image => {
+                if let Some((w, h, rgba)) = store::load_full_image(&item.image_path) {
+                    let _ = self.clip_tx.send(ClipCommand::SetImage {
+                        width: w,
+                        height: h,
+                        rgba,
+                    });
                 }
             }
-            ui.add_space(6.0); ui.label(RichText::new("单击复制  ·  拖动调整顺序").size(12.0).color(MUTED));
-        });
-        if inner.response.interact(Sense::click_and_drag()).clicked() { self.copy_clip(index); }
+        }
+        self.copied = Some((item.id, Instant::now()));
     }
-    fn settings_modal(&mut self, ctx: &egui::Context) {
-        egui::Window::new("设置").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).fixed_size([340.0, 240.0]).show(ctx, |ui| {
-            ui.label(RichText::new("显示 / 隐藏快捷键").strong().color(TEXT)); ui.add_space(6.0);
-            ui.add(egui::TextEdit::singleline(&mut self.draft_hotkey).hint_text("例如 alt+shift+v").desired_width(f32::INFINITY));
-            ui.label(RichText::new("支持 Ctrl、Alt、Shift、Super + A–Z / F1–F12").size(12.0).color(MUTED));
-            ui.add_space(16.0); ui.checkbox(&mut self.draft_edge_hide, "鼠标离开后收纳到屏幕边缘");
-            if let Some(e) = &self.settings_error { ui.add_space(8.0); ui.label(RichText::new(e).color(Color32::from_rgb(229, 100, 88))); }
-            ui.add_space(18.0); ui.horizontal(|ui| {
-                if ui.button("取消").clicked() { self.show_settings = false; }
-                if ui.add(egui::Button::new(RichText::new("保存").color(Color32::WHITE).strong()).fill(BLUE).stroke(Stroke::NONE).corner_radius(6.0).min_size([72.0, 36.0].into())).clicked() {
-                    match hotkey::parse(&self.draft_hotkey) {
-                        Ok(_) => { self.settings.hotkey = self.draft_hotkey.trim().to_lowercase(); self.settings.edge_hide = self.draft_edge_hide; if let Err(e) = self.store.save_settings(&self.settings) { self.settings_error = Some(format!("保存失败：{e}")); } else { self.show_settings = false; self.status = Some("设置已保存，快捷键将在下次启动后生效".into()); } }
-                        Err(e) => self.settings_error = Some(e),
+
+    fn add_clip(&mut self, event: ClipEvent) {
+        match event {
+            ClipEvent::Text { text, hash } => {
+                if self.items.iter().any(|i| i.hash == hash) {
+                    return;
+                }
+                let item = Item {
+                    id: store::new_id(&hash),
+                    kind: Kind::Text,
+                    text,
+                    image_path: String::new(),
+                    hash,
+                    created: store::now_ts(),
+                    pinned: false,
+                    width: 0,
+                    height: 0,
+                };
+                self.insert_new(item);
+            }
+            ClipEvent::Image {
+                width,
+                height,
+                rgba,
+                hash,
+            } => {
+                if self.items.iter().any(|i| i.hash == hash) {
+                    return;
+                }
+                let id = store::new_id(&hash);
+                // 图片保存失败时跳过该条，不影响程序运行
+                let path = match store::save_image(&id, width, height, &rgba) {
+                    Some(path) => path,
+                    None => return,
+                };
+                let item = Item {
+                    id,
+                    kind: Kind::Image,
+                    text: String::new(),
+                    image_path: path,
+                    hash,
+                    created: store::now_ts(),
+                    pinned: false,
+                    width,
+                    height,
+                };
+                self.insert_new(item);
+            }
+        }
+    }
+
+    fn insert_new(&mut self, item: Item) {
+        let position = self.items.iter().filter(|i| i.pinned).count();
+        self.items.insert(position, item);
+        self.mark_dirty();
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    // ------------------------------------------------------------ 设置窗口
+
+    pub fn save_settings_draft(&mut self) {
+        let draft = self.draft_hotkey.trim().to_lowercase();
+        match self.hotkeys.register(&draft) {
+            Ok(id) => {
+                self.hotkey_id = Some(id);
+                self.hotkey_error = None;
+                self.settings.hotkey = draft;
+                self.settings.edge_hide = self.draft_edge_hide;
+                self.settings_error = None;
+                self.show_settings = false;
+                store::save_settings(&self.settings);
+            }
+            Err(err) => {
+                self.settings_error = Some(err);
+            }
+        }
+    }
+
+    pub fn close_settings(&mut self) {
+        self.show_settings = false;
+        self.settings_error = None;
+    }
+
+    // ------------------------------------------------------------ 纹理懒加载
+
+    pub fn preload_textures(&mut self, ctx: &egui::Context) {
+        let mut budget = TEXTURES_PER_FRAME;
+        let candidates: Vec<(String, String)> = self
+            .items
+            .iter()
+            .filter(|item| item.kind == Kind::Image && !self.textures.contains_key(&item.id))
+            .filter(|item| self.visible_ids.is_empty() || self.visible_ids.contains(&item.id))
+            .take(TEXTURES_PER_FRAME)
+            .map(|item| (item.id.clone(), item.image_path.clone()))
+            .collect();
+
+        for (id, path) in candidates {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            let handle = store::load_thumbnail(&path, 720).map(|(w, h, rgba)| {
+                let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                ctx.load_texture(format!("clip_{}", id), image, egui::TextureOptions::LINEAR)
+            });
+            self.textures.insert(id, handle);
+        }
+
+        // 缓存上限，避免大量图片占用内存
+        if self.textures.len() > 60 && !self.visible_ids.is_empty() {
+            let visible = self.visible_ids.clone();
+            self.textures.retain(|id, _| visible.contains(id));
+        }
+    }
+
+    // ------------------------------------------------------------ 窗口行为
+
+    fn apply_window_level(&self, ctx: &egui::Context) {
+        let level = if self.settings.panel_pinned {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+    }
+
+    fn monitor_size(&self, ctx: &egui::Context) -> egui::Vec2 {
+        ctx.input(|i| i.viewport().monitor_size)
+            .unwrap_or(egui::vec2(1920.0, 1080.0))
+    }
+
+    fn place_initial(&mut self, ctx: &egui::Context) {
+        let monitor = self.monitor_size(ctx);
+        let width = self.settings.clamped_width();
+        if self.settings.x < 0.0 {
+            self.settings.x = (monitor.x - width - 16.0).max(0.0);
+        }
+        if self.settings.height <= 0.0 {
+            self.settings.height = (monitor.y - 120.0).max(320.0);
+        }
+        self.settings.width = width;
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            self.settings.x,
+            self.settings.y,
+        )));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            width,
+            self.settings.height,
+        )));
+        self.apply_window_level(ctx);
+        self.placed = true;
+    }
+
+    pub fn toggle_panel(&mut self, ctx: &egui::Context) {
+        if self.hidden || self.collapsed {
+            self.show_panel(ctx);
+        } else {
+            self.hide_panel(ctx);
+        }
+    }
+
+    fn show_panel(&mut self, ctx: &egui::Context) {
+        self.hidden = false;
+        self.collapsed = false;
+        self.last_active = Instant::now();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            self.settings.clamped_width(),
+            self.settings.height,
+        )));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            self.settings.x,
+            self.settings.y,
+        )));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        self.apply_window_level(ctx);
+    }
+
+    fn hide_panel(&mut self, ctx: &egui::Context) {
+        if self.settings.edge_hide {
+            self.collapsed = true;
+            let monitor = self.monitor_size(ctx);
+            let width = self.settings.clamped_width();
+            let center = self.settings.x + width / 2.0;
+            // 收纳到最近的屏幕边缘
+            let x = if center > monitor.x / 2.0 {
+                monitor.x - EDGE_STRIP
+            } else {
+                0.0
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                EDGE_STRIP,
+                self.settings.height,
+            )));
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                x,
+                self.settings.y,
+            )));
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::AlwaysOnTop,
+            ));
+        } else {
+            self.hidden = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+    }
+
+    /// 只有鼠标离开整个竖栏、且没有任何交互进行中时，才会隐藏
+    fn update_autohide(&mut self, ctx: &egui::Context) {
+        if self.hidden {
+            return;
+        }
+        let pointer_inside = ctx.input(|i| i.pointer.hover_pos().is_some());
+        let busy = self.drag.is_some()
+            || self.show_settings
+            || ctx.memory(|m| m.any_popup_open())
+            || ctx.input(|i| i.pointer.any_down())
+            || ctx.wants_keyboard_input();
+
+        if pointer_inside || busy {
+            self.last_active = Instant::now();
+            if self.collapsed && pointer_inside {
+                self.show_panel(ctx);
+            }
+            return;
+        }
+
+        if self.settings.panel_pinned || self.collapsed {
+            return;
+        }
+        if self.last_active.elapsed() > HIDE_DELAY {
+            self.hide_panel(ctx);
+        }
+    }
+
+    /// 左侧边缘拖动调整宽度（300–800 px）
+    fn width_resizer(&mut self, ctx: &egui::Context) {
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("cliprail_resizer"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.left_top())
+            .show(ctx, |ui| {
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(6.0, screen.height()),
+                    egui::Sense::drag(),
+                );
+                if response.hovered() || response.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    ui.painter().rect_filled(
+                        rect,
+                        egui::Rounding::ZERO,
+                        theme::ACCENT.gamma_multiply(0.35),
+                    );
+                }
+                if response.dragged() {
+                    let dx = response.drag_delta().x;
+                    let old = self.settings.clamped_width();
+                    let new = (old - dx).clamp(300.0, 800.0);
+                    if (new - old).abs() > 0.5 {
+                        self.settings.x += old - new;
+                        self.settings.width = new;
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                            egui::vec2(new, self.settings.height),
+                        ));
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                                self.settings.x,
+                                self.settings.y,
+                            )));
+                        self.mark_dirty();
                     }
                 }
             });
-        });
+    }
+
+    /// 记录用户手动移动 / 缩放后的位置，下次启动恢复
+    fn sync_geometry(&mut self, ctx: &egui::Context) {
+        if self.collapsed || self.hidden {
+            return;
+        }
+        let outer = ctx.input(|i| i.viewport().outer_rect);
+        if let Some(rect) = outer {
+            let (x, y, w, h) = (rect.left(), rect.top(), rect.width(), rect.height());
+            if w >= 200.0
+                && ((x - self.settings.x).abs() > 1.0
+                    || (y - self.settings.y).abs() > 1.0
+                    || (w - self.settings.width).abs() > 1.0
+                    || (h - self.settings.height).abs() > 1.0)
+            {
+                self.settings.x = x;
+                self.settings.y = y;
+                self.settings.width = w;
+                self.settings.height = h;
+                self.mark_dirty();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 轮询
+
+    fn poll_clipboard(&mut self) {
+        while let Ok(event) = self.clip_rx.try_recv() {
+            self.add_clip(event);
+        }
+    }
+
+    fn poll_hotkey(&mut self, ctx: &egui::Context) {
+        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+            if let Some(id) = self.hotkey_id {
+                if event.id != id {
+                    continue;
+                }
+            }
+            // 按下 / 松开会各发一次事件，用时间窗去抱
+            if self.last_hotkey.elapsed() > Duration::from_millis(250) {
+                self.toggle_panel(ctx);
+            }
+            self.last_hotkey = Instant::now();
+        }
+    }
+
+    /// `ClipRail --toggle`（Wayland 方案）通过标记文件通知本实例
+    fn poll_toggle_file(&mut self, ctx: &egui::Context) {
+        if self.last_toggle_check.elapsed() < Duration::from_millis(250) {
+            return;
+        }
+        self.last_toggle_check = Instant::now();
+        let path = store::toggle_file();
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+            self.toggle_panel(ctx);
+        }
+    }
+
+    fn tick_copied(&mut self) {
+        if let Some((_, at)) = &self.copied {
+            if at.elapsed() > COPIED_DURATION {
+                self.copied = None;
+            }
+        }
+    }
+
+    fn persist(&mut self, force: bool) {
+        if !self.dirty {
+            return;
+        }
+        if !force && self.last_persist.elapsed() < PERSIST_INTERVAL {
+            return;
+        }
+        store::save_items(&self.items);
+        store::save_settings(&self.settings);
+        archive::rebuild(&self.items);
+        self.dirty = false;
+        self.last_persist = Instant::now();
     }
 }
 
-fn icon_button<'a>(text: &'a str, tip: &'a str) -> egui::Button<'a> { egui::Button::new(RichText::new(text).size(16.0)).frame(false).min_size([36.0, 36.0].into()).sense(Sense::click()).wrap().shortcut_text(tip) }
-fn time_label(ts: i64) -> String { chrono::DateTime::from_timestamp(ts, 0).map(|d| d.with_timezone(&chrono::Local).format("%m月%d日  %H:%M").to_string()).unwrap_or_default() }
-fn empty_state(ui: &mut egui::Ui) { ui.vertical_centered(|ui| { ui.add_space(80.0); ui.label(RichText::new("⌘").size(36.0).color(BLUE)); ui.add_space(8.0); ui.label(RichText::new("复制一点内容开始吧").size(17.0).strong().color(TEXT)); ui.label(RichText::new("文本和图片会自动、安全地保存在本机").size(13.0).color(MUTED)); }); }
-fn configure_style(ctx: &egui::Context) { let mut style = (*ctx.style()).clone(); style.spacing.item_spacing = Vec2::new(8.0, 8.0); style.spacing.interact_size.y = 34.0; style.visuals = egui::Visuals::light(); style.visuals.panel_fill = SOFT; style.visuals.widgets.inactive.corner_radius = CornerRadius::same(6); style.visuals.widgets.hovered.corner_radius = CornerRadius::same(6); style.visuals.selection.bg_fill = BLUE; ctx.set_style(style); }
+impl eframe::App for App {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.976, 0.973, 0.969, 1.0]
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.placed {
+            self.place_initial(ctx);
+        }
+
+        self.poll_clipboard();
+        self.poll_hotkey(ctx);
+        self.poll_toggle_file(ctx);
+        self.tick_copied();
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // Esc 取消拖拽，不删除、不改变顺序
+            self.drag = None;
+            if self.show_settings {
+                self.close_settings();
+            }
+        }
+
+        if self.collapsed {
+            sidebar::show_collapsed(ctx);
+        } else {
+            sidebar::show(self, ctx);
+            settings_ui::show(self, ctx);
+            self.width_resizer(ctx);
+            self.sync_geometry(ctx);
+        }
+
+        self.update_autohide(ctx);
+        self.persist(false);
+
+        ctx.request_repaint_after(Duration::from_millis(120));
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.dirty = true;
+        self.persist(true);
+    }
+}

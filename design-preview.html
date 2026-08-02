@@ -1,1 +1,222 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ClipRail UI Preview</title><style>:root{--text:#2c2c2b;--muted:#77736d;--soft:#f9f8f7;--border:#e6e5e3;--blue:#2783de;--blue-soft:#edf7ff;--green:#46a171}*{box-sizing:border-box}body{margin:0;background:#ecebea;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;color:var(--text);display:grid;place-items:center;min-height:100vh}.panel{width:390px;height:760px;background:var(--soft);border:1px solid #d8d6d2;box-shadow:0 18px 60px rgba(44,44,43,.16);padding:14px;border-radius:14px;overflow:hidden}.top{height:44px;display:flex;align-items:center;gap:9px}.brand{font-size:20px;font-weight:720;letter-spacing:-.3px}.sub{color:var(--muted);font-size:13px}.actions{margin-left:auto;display:flex;gap:4px}.icon{width:38px;height:38px;border:0;background:transparent;border-radius:8px;font-size:17px;cursor:pointer}.icon:hover{background:#efeeec}.bar{background:white;border:1px solid var(--border);border-radius:9px;padding:7px 9px;display:flex;align-items:center;margin:8px 0 11px}.select{height:34px;border:0;background:transparent;color:var(--text);font-weight:600}.link{margin-left:auto;border:0;background:none;color:var(--blue);font-weight:600}.list{height:calc(100% - 107px);overflow:hidden}.card{background:white;border:1px solid var(--border);border-radius:11px;padding:12px;margin-bottom:10px;transition:.15s}.card:hover{border-color:#b9d4ee;transform:translateY(-1px)}.card.pinned{background:var(--blue-soft);border-color:var(--blue)}.meta{display:flex;align-items:center;gap:8px;height:24px}.check{appearance:none;width:18px;height:18px;margin:0;border:1.5px solid #aaa7a2;border-radius:5px;background:white}.check:checked{background:var(--blue);border-color:var(--blue)}.check:checked:after{content:'✓';display:block;color:white;text-align:center;font-weight:800;line-height:16px}.time{font-size:12.5px;color:var(--muted)}.pin{margin-left:auto;border:0;background:transparent;color:var(--blue);font-size:12.5px;font-weight:650;padding:5px 7px;border-radius:6px}.pin:hover{background:#dceefe}.content{font-size:15px;margin:9px 0 7px;line-height:1.55}.hint{color:var(--muted);font-size:12px}.copied{background:var(--green);color:white;border-radius:5px;padding:2px 7px;font-size:12px;font-weight:750}.image{height:145px;margin:9px 0 7px;border-radius:8px;background:linear-gradient(135deg,#d9e8f5,#f1dfcf 55%,#bcd5c8);position:relative;overflow:hidden}.image:after{content:'';position:absolute;inset:18px 24px;border:1px solid rgba(255,255,255,.65);border-radius:18px;background:linear-gradient(135deg,rgba(255,255,255,.35),rgba(255,255,255,.08))}.toast{position:absolute;bottom:22px;left:50%;transform:translateX(-50%);background:#2c2c2b;color:white;padding:9px 13px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.18);font-size:13px}</style></head><body><main class="panel"><header class="top"><span class="brand">ClipRail</span><span class="sub">本地剪贴板</span><div class="actions"><button class="icon" title="自动隐藏">◒</button><button class="icon" title="设置">⚙</button></div></header><section class="bar"><select class="select"><option>全部记录 (24)</option><option>今天 (12)</option></select><button class="link">全选</button></section><section class="list"><article class="card pinned"><div class="meta"><input class="check" type="checkbox"><span class="time" style="color:var(--blue);font-weight:650">已置顶</span><button class="pin">取消置顶</button></div><div class="content">项目交付前请完成跨平台构建，并检查 Windows 与 Linux 下的快捷键注册。</div><div class="hint">单击复制 · 拖动调整顺序</div></article><article class="card"><div class="meta"><input class="check" type="checkbox" checked><span class="copied">✓ 已复制</span><button class="pin">置顶</button></div><div class="content">https://github.com/example/cliprail</div><div class="hint">单击复制 · 拖动调整顺序</div></article><article class="card"><div class="meta"><input class="check" type="checkbox"><span class="time">08月02日&nbsp; 21:48</span><button class="pin">置顶</button></div><div class="image" role="img" aria-label="剪贴板图片预览"></div><div class="hint">单击复制 · 拖动调整顺序</div></article><article class="card"><div class="meta"><input class="check" type="checkbox"><span class="time">08月02日&nbsp; 20:31</span><button class="pin">置顶</button></div><div class="content">Alt + V 快速显示或隐藏 ClipRail。</div><div class="hint">单击复制 · 拖动调整顺序</div></article></section></main><script>document.querySelectorAll('.card').forEach(c=>c.addEventListener('click',e=>{if(e.target.matches('button,input'))return;let t=c.querySelector('.time');if(t){t.className='copied';t.textContent='✓ 已复制';setTimeout(()=>{t.className='time';t.textContent='刚刚'},1000)}}));</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ClipRail 界面预览</title>
+<style>
+  :root{
+    --text:#2C2C2B; --muted:#7D7A75; --canvas:#F9F8F7; --card:#FFFFFF;
+    --surface:#F0EFED; --border:#E6E5E3; --border-strong:#CFCDC9;
+    --accent:#2783DE; --accent-soft:#E5F2FC; --green:#46A171; --red:#E56458; --red-soft:#FCE9E7;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    padding-bottom:28px;
+    font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC","Microsoft YaHei",sans-serif;
+    color:var(--text); background:#EFEEEC; padding:32px 24px;
+  }
+  .wrap{max-width:1060px;margin:0 auto}
+  .head{margin-bottom:24px}
+  .head h1{font-size:22px;letter-spacing:-.2px}
+  .head p{color:var(--muted);font-size:13px;margin-top:6px}
+  .stage{display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap}
+
+  /* ---------------- 竖栏 ---------------- */
+  .panel{
+    width:390px;background:var(--canvas);border:1px solid var(--border);border-radius:12px;
+    overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.06);
+    display:flex;flex-direction:column;height:742px;
+  }
+  .topbar{background:var(--card);padding:10px 12px;border-bottom:1px solid var(--border)}
+  .row{display:flex;align-items:center;gap:8px}
+  .brand{font-size:15px;font-weight:600}
+  .count{font-size:11px;color:var(--muted)}
+  .spacer{flex:1}
+  .chip{
+    font-size:12px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);
+    background:var(--card);color:var(--text);cursor:default;white-space:nowrap;
+  }
+  .chip.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .chip.danger{background:var(--red-soft);border-color:var(--red);color:var(--red)}
+  .select{
+    font-size:12px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);
+    background:var(--card);display:flex;align-items:center;gap:8px;width:150px;justify-content:space-between;
+  }
+  .select .caret{color:var(--muted);font-size:10px}
+
+  .list{flex:1;overflow:hidden;padding:10px 12px;display:flex;flex-direction:column;gap:11px}
+  .section{font-size:10.5px;color:var(--muted)}
+  .section.pin{color:var(--accent)}
+
+  .item{
+    background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px;position:relative;
+  }
+  .item.pinned{background:var(--accent-soft);border-color:var(--accent)}
+  .item.hover{border-color:var(--border-strong);border-width:1.4px}
+  .item.dragging{border-color:var(--accent);border-width:1.4px;opacity:.55}
+  .item-top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .cb{width:18px;height:18px;border-radius:5px;border:1px solid var(--border-strong);background:#fff;flex:none}
+  .cb.on{background:var(--accent);border-color:var(--accent);position:relative}
+  .cb.on::after{
+    content:"";position:absolute;left:5px;top:2px;width:5px;height:10px;
+    border:2px solid #fff;border-top:0;border-left:0;transform:rotate(42deg);
+  }
+  .time{font-size:11px;color:var(--muted)}
+  .pin-btn{
+    font-size:11px;padding:3px 9px;border-radius:6px;background:var(--surface);
+    border:1px solid var(--border);color:var(--muted);line-height:16px;
+  }
+  .pin-btn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .body{font-size:13px;word-break:break-word}
+  .meta{font-size:10.5px;color:var(--muted);margin-top:6px}
+  .thumb{width:100%;border-radius:6px;display:block}
+  .copied{
+    position:absolute;left:48px;top:18px;background:var(--green);color:#fff;
+    font-size:12.5px;font-weight:600;padding:3px 10px;border-radius:6px;
+  }
+  .dropline{height:3px;border-radius:2px;background:var(--accent)}
+  .footer{background:var(--card);border-top:1px solid var(--border);padding:8px 12px;font-size:10.5px;color:var(--muted)}
+
+  /* ---------------- 设置窗口 ---------------- */
+  .side{display:flex;flex-direction:column;gap:24px;flex:1;min-width:300px}
+  .win{
+    width:320px;background:var(--card);border:1px solid var(--border);border-radius:12px;
+    box-shadow:0 4px 16px rgba(0,0,0,.07);overflow:hidden;
+  }
+  .win h3{font-size:14px;padding:12px 18px;border-bottom:1px solid var(--border)}
+  .win .content{padding:18px}
+  .label{font-size:12.5px;font-weight:600}
+  .input{
+    margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:7px 9px;
+    font-size:13px;background:#fff;
+  }
+  .hint{font-size:10.5px;color:var(--muted);margin-top:6px}
+  .divider{height:1px;background:var(--border);margin:16px 0}
+  .switch{width:42px;height:24px;border-radius:12px;background:var(--accent);position:relative;flex:none}
+  .switch::after{content:"";position:absolute;right:3px;top:3px;width:18px;height:18px;border-radius:50%;background:#fff}
+  .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+  .btn{font-size:12.5px;padding:7px 18px;border-radius:8px;border:1px solid var(--border);background:#fff}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+
+  .notes{font-size:12.5px;color:var(--muted);line-height:1.9}
+  .notes b{color:var(--text);font-weight:600}
+  .notes .k{display:inline-block;min-width:96px;color:var(--text);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <h1>ClipRail 界面预览</h1>
+    <p>浅色、低干扰的竖向侧栏：单击复制、拖动排序、拖出删除，操作提示常驻底部。</p>
+  </div>
+
+  <div class="stage">
+    <!-- 竖栏 -->
+    <div class="panel">
+      <div class="topbar">
+        <div class="row">
+          <span class="brand">ClipRail</span>
+          <span class="count">128 条</span>
+          <span class="spacer"></span>
+          <span class="chip primary">已置顶</span>
+          <span class="chip">设置</span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div class="select"><span>今天（12）</span><span class="caret">▾</span></div>
+          <span class="spacer"></span>
+          <span class="chip">取消</span>
+          <span class="chip danger">删除 2</span>
+        </div>
+      </div>
+
+      <div class="list">
+        <div class="section pin">已置顶</div>
+
+        <div class="item pinned">
+          <div class="item-top">
+            <span class="cb"></span><span class="time">09:41</span>
+            <span class="spacer"></span><span class="pin-btn on">已置顶</span>
+          </div>
+          <div class="body">ssh deploy@10.12.4.8 -p 2200</div>
+          <div class="meta">文本 · 28 字</div>
+        </div>
+
+        <div class="section">最近</div>
+
+        <div class="item hover">
+          <div class="item-top">
+            <span class="cb"></span>
+            <span class="spacer"></span><span class="pin-btn">置顶</span>
+          </div>
+          <div class="body">发布说明草稿：本次更新修复了剪贴板占用时的重试逻辑，并将入库延迟降低到 300 毫秒以内。</div>
+          <div class="meta">文本 · 46 字</div>
+          <div class="copied">✓ 已复制</div>
+        </div>
+
+        <div class="item">
+          <div class="item-top">
+            <span class="cb on"></span><span class="time">10:02</span>
+            <span class="spacer"></span><span class="pin-btn">置顶</span>
+          </div>
+          <svg class="thumb" viewBox="0 0 340 104" role="img" aria-label="截图缩略图">
+            <rect width="340" height="104" fill="#EDF3F9"/>
+            <rect x="16" y="18" width="120" height="10" rx="5" fill="#C3D8EE"/>
+            <rect x="16" y="40" width="210" height="8" rx="4" fill="#D8E3EE"/>
+            <rect x="16" y="58" width="180" height="8" rx="4" fill="#D8E3EE"/>
+            <rect x="16" y="74" width="84" height="20" rx="6" fill="#2783DE" opacity=".85"/>
+            <rect x="250" y="18" width="74" height="70" rx="8" fill="#CFE0F2"/>
+          </svg>
+          <div class="meta">图片 · 1280×720</div>
+        </div>
+
+        <div class="dropline"></div>
+
+        <div class="item dragging">
+          <div class="item-top">
+            <span class="cb on"></span><span class="time">09:58</span>
+            <span class="spacer"></span><span class="pin-btn">置顶</span>
+          </div>
+          <div class="body">https://github.com/your-name/cliprail/actions</div>
+          <div class="meta">文本 · 45 字</div>
+        </div>
+      </div>
+
+      <div class="footer">单击复制 · 上下拖动排序 · 拖出窗口删除 · ALT+V 显示/隐藏</div>
+    </div>
+
+    <!-- 右侧：设置窗口 + 说明 -->
+    <div class="side">
+      <div class="win">
+        <h3>设置</h3>
+        <div class="content">
+          <div class="label">显示 / 隐藏快捷键</div>
+          <div class="input">alt+v</div>
+          <div class="hint">修饰键：ctrl / alt / shift / super；主键：A–Z 或 F1–F12</div>
+          <div class="divider"></div>
+          <div class="row">
+            <div>
+              <div class="label">边缘收纳</div>
+              <div class="hint" style="margin-top:2px">鼠标离开后贴边保留窄条，移回即可展开</div>
+            </div>
+            <span class="spacer"></span>
+            <span class="switch"></span>
+          </div>
+          <div class="actions">
+            <span class="btn">取消</span><span class="btn primary">保存</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <div><span class="k">复制反馈</span>绿色实色 <b>✓ 已复制</b>，约 1 秒后消失，不遮挡复选框与置顶按钮</div>
+        <div><span class="k">置顶 Item</span>浅蓝背景 + 蓝色边框，固定在列表顶部</div>
+        <div><span class="k">拖动排序</span>拖动项淡出至约 55%，蓝色指示线标记落点</div>
+        <div><span class="k">拖出删除</span>移出窗口时窗口边框变红提示</div>
+        <div><span class="k">自动隐藏</span>鼠标离开约 650 ms 后贴边收纳，菜单/设置打开时不隐藏</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

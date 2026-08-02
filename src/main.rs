@@ -1,26 +1,63 @@
+// 发布版不弹控制台窗口
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
+mod archive;
 mod clipboard;
 mod hotkey;
 mod model;
+mod platform;
 mod store;
+mod ui;
 
-use app::ClipRailApp;
+use eframe::egui;
 
 fn main() -> eframe::Result<()> {
-    let toggle_only = std::env::args().any(|a| a == "--toggle");
-    if toggle_only {
-        // Desktop environments may bind this command. A running-instance IPC hook can
-        // replace this fallback without changing the public CLI.
-        eprintln!("ClipRail --toggle: 请绑定主程序配置的全局快捷键");
+    store::ensure_dirs();
+
+    // `ClipRail --toggle`：通知已运行实例显示 / 隐藏，然后立即退出。
+    // 主要用于 Wayland 下将其绑定到系统快捷键。
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--toggle") {
+        let _ = std::fs::write(store::toggle_file(), b"1");
         return Ok(());
     }
-    let settings = store::Store::portable().load_settings();
-    let viewport = egui::ViewportBuilder::default()
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("ClipRail - 剪贴板历史侧栏");
+        println!("  ClipRail            启动程序");
+        println!("  ClipRail --toggle   显示 / 隐藏已运行的竖栏");
+        return Ok(());
+    }
+
+    let settings = store::load_settings();
+    let (event_tx, event_rx) = crossbeam_channel::unbounded();
+    let (command_tx, command_rx) = crossbeam_channel::unbounded();
+    clipboard::spawn(event_tx, command_rx);
+
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title("ClipRail")
-        .with_inner_size([settings.width.clamp(300.0, 800.0), 760.0])
-        .with_min_inner_size([300.0, 420.0])
+        .with_app_id("cliprail")
+        .with_inner_size([settings.clamped_width(), settings.height])
+        .with_min_inner_size([300.0, 240.0])
         .with_decorations(false)
-        .with_always_on_top();
-    eframe::run_native("ClipRail", eframe::NativeOptions { viewport, ..Default::default() }, Box::new(|cc| Ok(Box::new(ClipRailApp::new(cc)))))
+        .with_resizable(true)
+        .with_transparent(false);
+
+    if settings.x >= 0.0 {
+        viewport = viewport.with_position([settings.x, settings.y]);
+    }
+
+    let options = eframe::NativeOptions {
+        viewport,
+        centered: false,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "ClipRail",
+        options,
+        Box::new(move |cc| {
+            Ok(Box::new(app::App::new(cc, settings, command_tx, event_rx)))
+        }),
+    )
 }
