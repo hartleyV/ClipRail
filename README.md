@@ -1,53 +1,23 @@
-# ClipRail Rust
+# ClipRail
 
-ClipRail轻量管理粘贴板内容，简单易用，采用Rust语言，支持Windows 和 Linux 平台。
+轻量、私密、跨平台的剪贴板历史侧栏。文本与图片只保存在可执行文件同级的 `data/` 目录。
 
-## 目标发布文件
+## 核心体验
 
-- Windows x64：`ClipRail.exe`
-- Linux x64：`ClipRail`
+- 自动记录文本和图片，SHA-256 去重
+- `Alt + V` 快速呼出（可在设置中修改）
+- 单击卡片立即复制，并显示“✓ 已复制”反馈
+- 内容置顶、日期筛选、多选与批量删除
+- 浅色无标题栏侧栏，宽度适配 300–800 px
+- JSON 原子写入、每日归档、丢失图片容错
 
-
-## 功能
-
-- 监听文本和图片剪贴板
-- 内容 SHA-256 自动去重，不限制记录数量
-- Item 单击复制、清晰的“✓ 已复制”状态
-- Item 置顶、独立背景色、批量选择和删除
-- Item 拖动排序、拖出窗口删除、拖动渐变动画
-- 响应式图片预览和始终可见的置顶按钮
-- 日期筛选及 `data/archives/YYYY-MM-DD.json` 自动归档
-- 可配置显示/隐藏快捷键
-- 竖栏置顶与边缘自动隐藏
-- 拖动顶部移动竖栏，拖动左边缘调整宽度
-- 数据保存在可执行文件同级 `data` 目录
-
-
-## 编译
-
-安装 Rust 后双击：
-
-```text
-build-windows.bat
-```
-
-输出：`ClipRail.exe`。
-
-## Linux 本机编译
-
-Debian/Ubuntu 先安装系统依赖：
+## 本地开发
 
 ```bash
-sudo apt install build-essential libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev
-chmod +x build-linux.sh
-./build-linux.sh
+cargo run --release
 ```
 
-输出：`ClipRail`。
-
-## 使用
-
-将生成的可执行文件放到一个具有写权限的目录，直接运行。首次记录内容后会自动创建：
+Linux 需要 X11 / Wayland 开发包。程序首次运行会在可执行文件同级创建：
 
 ```text
 data/
@@ -57,4 +27,22 @@ data/
 └─ archives/
 ```
 
-默认快捷键：`Alt + Shift + V`。
+## GitHub Actions 构建
+
+1. 将本项目全部内容上传到 GitHub 仓库。
+2. 打开 **Actions → Build ClipRail**。
+3. 点击 **Run workflow**。
+4. 下载 `ClipRail-Windows` 或 `ClipRail-Linux`。
+
+## 交互说明
+
+- 点击卡片主体：复制内容
+- 点击左上复选框：加入批量操作
+- 点击右上“置顶”：固定到列表顶部
+- 顶部日期菜单：查看全部、今天或具体日期
+- 顶部图钉：切换面板置顶 / 自动隐藏状态
+- 顶部齿轮：设置快捷键与边缘收纳
+
+## 当前实现说明
+
+该项目包含完整数据模型、剪贴板监听、去重、图片持久化、日期归档、快捷键注册、侧栏 UI 与 CI 构建。不同 Linux 桌面环境对全局快捷键及窗口边缘收纳的支持差异较大，生产发布前建议在目标桌面环境下补充单实例 IPC 与窗口级边缘动画。
