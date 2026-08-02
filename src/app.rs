@@ -65,6 +65,8 @@ pub struct App {
     hotkeys: HotkeyService,
     hotkey_id: Option<u32>,
     last_hotkey: Instant,
+    /// 后台线程转发的全局快捷键事件（窗口隐藏时也能可靠收到）
+    hotkey_rx: Receiver<u32>,
 
     pub textures: HashMap<String, Option<egui::TextureHandle>>,
     pub visible_ids: HashSet<String>,
@@ -92,6 +94,8 @@ pub struct App {
     dirty: bool,
     last_persist: Instant,
     last_toggle_check: Instant,
+    /// 重新显示后需要补发的 Focus 命令次数
+    pending_focus: u8,
 }
 
 impl App {
@@ -113,6 +117,23 @@ impl App {
             }
         };
 
+        // 全局快捷键监听线程：窗口被隐藏 / 贴边后不会再收到重绘事件，
+        // 主循环会休眠导致快捷键“没人取”。用独立线程阻塞接收并
+        // 主动唤醒 UI（request_repaint），保证隐藏状态下也能再次唤出。
+        let (hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded::<u32>();
+        {
+            let ctx = cc.egui_ctx.clone();
+            std::thread::spawn(move || {
+                let receiver = GlobalHotKeyEvent::receiver();
+                while let Ok(event) = receiver.recv() {
+                    if hotkey_tx.send(event.id).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        }
+
         let items = store::load_items();
         archive::rebuild(&items);
 
@@ -126,6 +147,7 @@ impl App {
             hotkeys,
             hotkey_id,
             last_hotkey: Instant::now() - Duration::from_secs(5),
+            hotkey_rx,
             textures: HashMap::new(),
             visible_ids: HashSet::new(),
             selected: HashSet::new(),
@@ -146,6 +168,7 @@ impl App {
             dirty: false,
             last_persist: Instant::now(),
             last_toggle_check: Instant::now(),
+            pending_focus: 0,
         }
     }
 
@@ -502,8 +525,10 @@ impl App {
             self.settings.height,
         )));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         self.apply_window_level(ctx);
+        // 刚从隐藏状态恢复时，同一帧内的 Focus 往往会被系统忽略，
+        // 因此接下来几帧继续补发，保证窗口真的回到前景并能接收按键。
+        self.pending_focus = 3;
         ctx.request_repaint();
     }
 
@@ -699,9 +724,9 @@ impl App {
     }
 
     fn poll_hotkey(&mut self, ctx: &egui::Context) {
-        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+        while let Ok(event_id) = self.hotkey_rx.try_recv() {
             if let Some(id) = self.hotkey_id {
-                if event.id != id {
+                if event_id != id {
                     continue;
                 }
             }
@@ -757,6 +782,14 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.placed {
             self.place_initial(ctx);
+        }
+
+        // 隐藏 / 贴边恢复后补发焦点，避免窗口“显示了但拿不到焦点”
+        if self.pending_focus > 0 {
+            self.pending_focus -= 1;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.request_repaint();
         }
 
         self.poll_clipboard();
