@@ -5,7 +5,6 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::mpsc,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -349,7 +348,7 @@ impl ClipRailApp {
         let fill = Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), (255.0 - 105.0 * t) as u8);
         let frame = egui::Frame::none()
             .fill(fill)
-            .stroke(Stroke::new(1.5, border))
+            .stroke(Stroke::new(1.5_f32, border))
             .rounding(egui::Rounding::same(11.0))
             .inner_margin(egui::Margin::same(12.0));
         let mut suppress_copy = false;
@@ -396,7 +395,7 @@ impl ClipRailApp {
             match pointer {
                 None => { let ids = HashSet::from([id]); self.store.delete_ids(&ids); }
                 Some(pos) => {
-                    let before = self.card_rects.iter().find(|(other, rect)| other != &id && pos.y < rect.center().y()).map(|x| x.0.clone());
+                    let before = self.card_rects.iter().find(|(other, rect)| other != &id && pos.y < rect.center().y).map(|x| x.0.clone());
                     self.store.reorder(&id, before.as_deref());
                 }
             }
@@ -457,7 +456,7 @@ impl eframe::App for ClipRailApp {
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                egui::ComboBox::from_id_source("day_filter")
+                egui::ComboBox::from_id_salt("day_filter")
                     .selected_text(if self.current_day == "all" { "全部记录" } else { &self.current_day })
                     .width(ui.available_width() - 125.0)
                     .show_ui(ui, |ui| {
