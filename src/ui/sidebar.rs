@@ -39,7 +39,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(format!("{} 条", app.items.len()))
-                        .size(11.0)
+                        .size(theme::FONT_SMALL)
                         .color(theme::MUTED),
                 );
 
@@ -86,7 +86,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 let current_label = app.filter_label();
                 egui::ComboBox::from_id_source("cliprail_date")
-                    .selected_text(egui::RichText::new(current_label).size(12.0))
+                    .selected_text(
+                        egui::RichText::new(current_label)
+                            .size(theme::FONT_BUTTON)
+                            .color(theme::TEXT),
+                    )
                     .width(150.0)
                     .show_ui(ui, |ui| {
                         let total = app.items.len();
@@ -155,7 +159,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 "单击复制 · 上下拖动排序 · 拖出窗口删除 · {} 显示/隐藏",
                 app.settings.hotkey.to_uppercase()
             );
-            ui.label(egui::RichText::new(tip).size(10.5).color(theme::MUTED));
+            ui.label(egui::RichText::new(tip).size(theme::FONT_SMALL).color(theme::MUTED));
         });
 
     // ------------------------------------------------------------ 列表
@@ -196,14 +200,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             ui.add_space(2.0);
                             ui.label(
                                 egui::RichText::new("最近")
-                                    .size(10.5)
+                                    .size(theme::FONT_SMALL)
                                     .color(theme::MUTED),
                             );
                         }
                         if item.pinned && pos == 0 {
                             ui.label(
                                 egui::RichText::new("已置顶")
-                                    .size(10.5)
+                                    .size(theme::FONT_SMALL)
                                     .color(theme::ACCENT),
                             );
                         }
@@ -355,7 +359,7 @@ fn banner(ui: &mut egui::Ui, message: &str) {
             ui.set_width(ui.available_width());
             ui.label(
                 egui::RichText::new(message)
-                    .size(11.5)
+                    .size(theme::FONT_SMALL)
                     .color(Color32::from_rgb(0x9E, 0x33, 0x28)),
             );
         });

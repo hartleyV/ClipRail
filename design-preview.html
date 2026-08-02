@@ -69,14 +69,15 @@
   }
   .pin-btn.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .body{font-size:13px;word-break:break-word}
-  .meta{font-size:10.5px;color:var(--muted);margin-top:6px}
+  .meta{font-size:11px;color:var(--muted);margin-top:6px}
   .thumb{width:100%;border-radius:6px;display:block}
   .copied{
     position:absolute;left:48px;top:18px;background:var(--green);color:#fff;
-    font-size:12.5px;font-weight:600;padding:3px 10px;border-radius:6px;
+    font-size:12px;font-weight:600;padding:3px 10px;border-radius:6px;
+    display:inline-flex;align-items:center;gap:5px;line-height:1;
   }
   .dropline{height:3px;border-radius:2px;background:var(--accent)}
-  .footer{background:var(--card);border-top:1px solid var(--border);padding:8px 12px;font-size:10.5px;color:var(--muted)}
+  .footer{background:var(--card);border-top:1px solid var(--border);padding:8px 12px;font-size:11px;color:var(--muted)}
 
   /* ---------------- 设置窗口 ---------------- */
   .side{display:flex;flex-direction:column;gap:24px;flex:1;min-width:300px}
@@ -151,7 +152,7 @@
           </div>
           <div class="body">发布说明草稿：本次更新修复了剪贴板占用时的重试逻辑，并将入库延迟降低到 300 毫秒以内。</div>
           <div class="meta">文本 · 46 字</div>
-          <div class="copied">✓ 已复制</div>
+          <div class="copied"><svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.4 L4.8 9 L10 3.2" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>已复制</div>
         </div>
 
         <div class="item">
@@ -209,11 +210,14 @@
       </div>
 
       <div class="notes">
-        <div><span class="k">复制反馈</span>绿色实色 <b>✓ 已复制</b>，约 1 秒后消失，不遮挡复选框与置顶按钮</div>
+        <div><span class="k">复制反馈</span>绿色实色 <b>已复制</b>，对勾为矢量绘制（不会出现缺字方框），约 1 秒后消失</div>
         <div><span class="k">置顶 Item</span>浅蓝背景 + 蓝色边框，固定在列表顶部</div>
         <div><span class="k">拖动排序</span>拖动项淡出至约 55%，蓝色指示线标记落点</div>
         <div><span class="k">拖出删除</span>移出窗口时窗口边框变红提示</div>
-        <div><span class="k">自动隐藏</span>鼠标离开约 650 ms 后贴边收纳，菜单/设置打开时不隐藏</div>
+        <div><span class="k">自动隐藏</span>鼠标离开约 650 ms 后一次性贴边收纳，移回立即完整展开，无闪烁</div>
+        <div><span class="k">调整宽度</span>拖左边缘时右边缘固定，不抖动；平时不显示蓝色竖线，只变光标</div>
+        <div><span class="k">快捷键</span>窗口内优先响应，鼠标在竖栏上也能直接显示/隐藏</div>
+        <div><span class="k">程序图标</span>剪贴板图形，Windows 任务栏上可见</div>
       </div>
     </div>
   </div>

@@ -35,6 +35,11 @@ pub struct DragState {
     pub id: String,
 }
 
+/// 拖动左边缘调宽时的基准：右边缘保持不动
+pub struct ResizeState {
+    pub right: f32,
+}
+
 pub enum Action {
     Copy(String),
     TogglePin(String),
@@ -73,6 +78,10 @@ pub struct App {
 
     pub drag: Option<DragState>,
     pub rows: Vec<(String, egui::Rect)>,
+
+    resize: Option<ResizeState>,
+    geometry_hold: Instant,
+    last_shown: Instant,
 
     last_active: Instant,
     collapsed: bool,
@@ -125,6 +134,9 @@ impl App {
             hotkey_error,
             drag: None,
             rows: Vec::new(),
+            resize: None,
+            geometry_hold: Instant::now(),
+            last_shown: Instant::now(),
             last_active: Instant::now(),
             collapsed: false,
             hidden: false,
@@ -467,24 +479,37 @@ impl App {
         }
     }
 
+    /// 一次性恢复位置 / 尺寸 / 可见性，不分多帧逐步展开，避免闪烁与拖影
     fn show_panel(&mut self, ctx: &egui::Context) {
+        if !self.hidden && !self.collapsed {
+            self.last_active = Instant::now();
+            return;
+        }
         self.hidden = false;
         self.collapsed = false;
         self.last_active = Instant::now();
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-            self.settings.clamped_width(),
-            self.settings.height,
-        )));
+        self.last_shown = Instant::now();
+        self.geometry_hold = Instant::now();
+
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
             self.settings.x,
             self.settings.y,
         )));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            self.settings.clamped_width(),
+            self.settings.height,
+        )));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         self.apply_window_level(ctx);
+        ctx.request_repaint();
     }
 
     fn hide_panel(&mut self, ctx: &egui::Context) {
+        if self.hidden || self.collapsed {
+            return;
+        }
+        self.geometry_hold = Instant::now();
         if self.settings.edge_hide {
             self.collapsed = true;
             let monitor = self.monitor_size(ctx);
@@ -520,6 +545,7 @@ impl App {
         }
         let pointer_inside = ctx.input(|i| i.pointer.hover_pos().is_some());
         let busy = self.drag.is_some()
+            || self.resize.is_some()
             || self.show_settings
             || ctx.memory(|m| m.any_popup_open())
             || ctx.input(|i| i.pointer.any_down())
@@ -527,6 +553,7 @@ impl App {
 
         if pointer_inside || busy {
             self.last_active = Instant::now();
+            // 贴边状态下鼠标碰到感知区：立即、一次性完整展开
             if self.collapsed && pointer_inside {
                 self.show_panel(ctx);
             }
@@ -536,47 +563,66 @@ impl App {
         if self.settings.panel_pinned || self.collapsed {
             return;
         }
+        // 刚展开的短时间内不允许隐藏，避免“弹出即收回”的闪烁
+        if self.last_shown.elapsed() < Duration::from_millis(400) {
+            return;
+        }
         if self.last_active.elapsed() > HIDE_DELAY {
             self.hide_panel(ctx);
         }
     }
 
-    /// 左侧边缘拖动调整宽度（300–800 px）
+    /// 左侧边缘拖动调整宽度（300–800 px）。
+    /// 采用“右边缘固定 + 绝对位置计算”，不累加增量，因此不会因为
+    /// 窗口移动与鼠标坐标互相影响而产生抖动；平时不绘制任何竖线，
+    /// 只在鼠标移到边缘时切换为左右拉伸光标。
     fn width_resizer(&mut self, ctx: &egui::Context) {
         let screen = ctx.screen_rect();
         egui::Area::new(egui::Id::new("cliprail_resizer"))
             .order(egui::Order::Foreground)
             .fixed_pos(screen.left_top())
             .show(ctx, |ui| {
-                let (rect, response) = ui.allocate_exact_size(
+                let (_rect, response) = ui.allocate_exact_size(
                     egui::vec2(6.0, screen.height()),
                     egui::Sense::drag(),
                 );
                 if response.hovered() || response.dragged() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                    ui.painter().rect_filled(
-                        rect,
-                        egui::Rounding::ZERO,
-                        theme::ACCENT.gamma_multiply(0.35),
-                    );
                 }
+
+                if response.drag_started() {
+                    self.resize = Some(ResizeState {
+                        right: self.settings.x + self.settings.clamped_width(),
+                    });
+                }
+
                 if response.dragged() {
-                    let dx = response.drag_delta().x;
-                    let old = self.settings.clamped_width();
-                    let new = (old - dx).clamp(300.0, 800.0);
-                    if (new - old).abs() > 0.5 {
-                        self.settings.x += old - new;
-                        self.settings.width = new;
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                            egui::vec2(new, self.settings.height),
-                        ));
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-                                self.settings.x,
-                                self.settings.y,
-                            )));
-                        self.mark_dirty();
+                    let pointer = ui.ctx().input(|i| i.pointer.latest_pos());
+                    if let (Some(state), Some(p)) = (self.resize.as_ref(), pointer) {
+                        // 鼠标在屏幕上的位置 = 窗口左边 + 窗口内坐标
+                        let global_x = self.settings.x + p.x;
+                        let new_width = (state.right - global_x).clamp(300.0, 800.0).round();
+                        let new_x = (state.right - new_width).round();
+                        // 2 px 死区：避免因一帧延迟引起的来回振荡
+                        if (new_width - self.settings.width).abs() >= 2.0 {
+                            self.settings.width = new_width;
+                            self.settings.x = new_x;
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::OuterPosition(
+                                egui::pos2(new_x, self.settings.y),
+                            ));
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                                egui::vec2(new_width, self.settings.height),
+                            ));
+                            self.geometry_hold = Instant::now();
+                            self.mark_dirty();
+                        }
                     }
+                }
+
+                if response.drag_stopped() {
+                    self.resize = None;
+                    self.geometry_hold = Instant::now();
+                    self.mark_dirty();
                 }
             });
     }
@@ -586,14 +632,19 @@ impl App {
         if self.collapsed || self.hidden {
             return;
         }
+        // 调宽 / 显示隐藏刚发生时，系统上报的窗口矩形还是旧值，
+        // 这时回写会与我们自己的目标值互相拉扯（表现为抖动）。
+        if self.resize.is_some() || self.geometry_hold.elapsed() < Duration::from_millis(400) {
+            return;
+        }
         let outer = ctx.input(|i| i.viewport().outer_rect);
         if let Some(rect) = outer {
             let (x, y, w, h) = (rect.left(), rect.top(), rect.width(), rect.height());
             if w >= 200.0
-                && ((x - self.settings.x).abs() > 1.0
-                    || (y - self.settings.y).abs() > 1.0
-                    || (w - self.settings.width).abs() > 1.0
-                    || (h - self.settings.height).abs() > 1.0)
+                && ((x - self.settings.x).abs() > 2.0
+                    || (y - self.settings.y).abs() > 2.0
+                    || (w - self.settings.width).abs() > 2.0
+                    || (h - self.settings.height).abs() > 2.0)
             {
                 self.settings.x = x;
                 self.settings.y = y;
@@ -609,6 +660,20 @@ impl App {
     fn poll_clipboard(&mut self) {
         while let Ok(event) = self.clip_rx.try_recv() {
             self.add_clip(event);
+        }
+    }
+
+    /// 窗口内部的快捷键：直接从输入事件中“消费”掉该组合键，
+    /// 因此它的优先级高于输入框等任何控件，不会被吸走。
+    fn poll_local_hotkey(&mut self, ctx: &egui::Context) {
+        let combo = match crate::hotkey::parse_egui(&self.settings.hotkey) {
+            Some(combo) => combo,
+            None => return,
+        };
+        let pressed = ctx.input_mut(|i| i.consume_key(combo.0, combo.1));
+        if pressed && self.last_hotkey.elapsed() > Duration::from_millis(200) {
+            self.last_hotkey = Instant::now();
+            self.toggle_panel(ctx);
         }
     }
 
@@ -674,6 +739,9 @@ impl eframe::App for App {
         }
 
         self.poll_clipboard();
+        // 先处理窗口内的快捷键（优先级高于任何控件），
+        // 保证鼠标在竖栏范围内 / 窗口获得焦点时按键也能显示隐藏
+        self.poll_local_hotkey(ctx);
         self.poll_hotkey(ctx);
         self.poll_toggle_file(ctx);
         self.tick_copied();

@@ -64,7 +64,7 @@ pub fn show(ui: &mut egui::Ui, view: ItemView) -> ItemOutput {
             } else {
                 ui.label(
                     egui::RichText::new(item.local_time())
-                        .size(11.0)
+                        .size(theme::FONT_SMALL)
                         .color(theme::MUTED),
                 );
             }
@@ -102,7 +102,7 @@ pub fn show(ui: &mut egui::Ui, view: ItemView) -> ItemOutput {
             Kind::Text => {
                 ui.label(
                     egui::RichText::new(item.preview())
-                        .size(13.0)
+                        .size(theme::FONT_BODY)
                         .color(theme::TEXT),
                 );
             }
@@ -146,7 +146,7 @@ pub fn show(ui: &mut egui::Ui, view: ItemView) -> ItemOutput {
                 }
             }
         };
-        ui.label(egui::RichText::new(meta).size(10.5).color(theme::MUTED));
+        ui.label(egui::RichText::new(meta).size(theme::FONT_SMALL).color(theme::MUTED));
     });
 
     let rect = inner.response.rect;
@@ -179,19 +179,30 @@ pub fn show(ui: &mut egui::Ui, view: ItemView) -> ItemOutput {
         );
     }
 
-    // “✓ 已复制”提示：左上区域，不遮挡复选框与置顶按钮
+    // “已复制”提示：左上区域，不遮挡复选框与置顶按钮。
+    // 对勾用矢量绘制，不使用 ✓ 字符，避免字体缺字形时显示为方框。
     if view.copied {
+        let label = "已复制";
+        let font_size = 12.0;
+        let text_w = crate::ui::text_width(ui, label, font_size);
         let badge = Rect::from_min_size(
             egui::pos2(rect.left() + 38.0, rect.top() + 9.0),
-            Vec2::new(78.0, 21.0),
+            Vec2::new(text_w + 34.0, 22.0),
         );
         let painter = ui.painter();
         painter.rect_filled(badge, Rounding::same(6.0), theme::GREEN);
+        crate::ui::paint_check_mark(
+            painter,
+            egui::pos2(badge.left() + 13.0, badge.center().y),
+            10.0,
+            Color32::WHITE,
+            1.8,
+        );
         painter.text(
-            badge.center(),
-            egui::Align2::CENTER_CENTER,
-            "✓ 已复制",
-            egui::FontId::proportional(12.5),
+            egui::pos2(badge.left() + 22.0, badge.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(font_size),
             Color32::WHITE,
         );
     }

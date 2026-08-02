@@ -84,6 +84,45 @@ fn parse_code(key: &str) -> Result<Code, String> {
     Ok(code)
 }
 
+/// 将快捷键解析为 egui 的按键组合。
+/// 用于“窗口已获得焦点时”在应用内部优先响应快捷键，
+/// 避免鼠标在竖栏范围内时全局快捷键被窗口吸走而失效。
+pub fn parse_egui(input: &str) -> Option<(eframe::egui::Modifiers, eframe::egui::Key)> {
+    use eframe::egui::{Key, Modifiers};
+
+    let text = input.trim().to_lowercase();
+    let mut modifiers = Modifiers::NONE;
+    let mut key: Option<Key> = None;
+
+    for part in text.split('+') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        match part {
+            "ctrl" | "control" => modifiers.ctrl = true,
+            "alt" | "option" => modifiers.alt = true,
+            "shift" => modifiers.shift = true,
+            "super" | "win" | "meta" | "cmd" => {
+                modifiers.command = true;
+                modifiers.mac_cmd = true;
+            }
+            other => {
+                if key.is_some() {
+                    return None;
+                }
+                key = Key::from_name(&other.to_uppercase())?;
+            }
+        }
+    }
+
+    // Windows / Linux 上 ctrl 与 command 等价
+    if modifiers.ctrl {
+        modifiers.command = true;
+    }
+    key.map(|k| (modifiers, k))
+}
+
 /// 保存当前注册状态，便于修改设置时替换
 pub struct HotkeyService {
     manager: Option<GlobalHotKeyManager>,

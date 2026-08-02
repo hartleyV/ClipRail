@@ -5,6 +5,7 @@ mod app;
 mod archive;
 mod clipboard;
 mod hotkey;
+mod icon;
 mod model;
 mod platform;
 mod store;
@@ -37,11 +38,14 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("ClipRail")
         .with_app_id("cliprail")
+        .with_icon(icon::clipboard_icon())
         .with_inner_size([settings.clamped_width(), settings.height])
         .with_min_inner_size([300.0, 240.0])
         .with_decorations(false)
         .with_resizable(true)
-        .with_transparent(false);
+        .with_transparent(false)
+        // Windows：作为普通窗口显示在任务栏上
+        .with_taskbar(true);
 
     if settings.x >= 0.0 {
         viewport = viewport.with_position([settings.x, settings.y]);
