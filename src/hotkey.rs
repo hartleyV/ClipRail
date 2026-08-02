@@ -111,7 +111,10 @@ pub fn parse_egui(input: &str) -> Option<(eframe::egui::Modifiers, eframe::egui:
                 if key.is_some() {
                     return None;
                 }
-                key = Key::from_name(&other.to_uppercase())?;
+                match Key::from_name(&other.to_uppercase()) {
+                    Some(k) => key = Some(k),
+                    None => return None,
+                }
             }
         }
     }
