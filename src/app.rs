@@ -96,6 +96,8 @@ pub struct App {
     last_toggle_check: Instant,
     /// 重新显示后需要补发的 Focus 命令次数
     pending_focus: u8,
+    /// 完全隐藏后是否已经真的失去过焦点（用于识别“点任务栏图标”唤回）
+    hidden_lost_focus: bool,
 }
 
 impl App {
@@ -169,6 +171,7 @@ impl App {
             last_persist: Instant::now(),
             last_toggle_check: Instant::now(),
             pending_focus: 0,
+            hidden_lost_focus: false,
         }
     }
 
@@ -505,10 +508,11 @@ impl App {
     }
 
     /// 一次性恢复位置 / 尺寸 / 可见性，不分多帧逐步展开，避免闪烁与拖影。
-    /// 无论内部标记如何，都会完整重发一次窗口命令：
-    /// 避免标记与系统实际窗口状态不同步时“什么都不发”而唤不出来。
+    /// 无论内部标记如何，都会完整重发一次窗口命令，避免标记
+    /// 与系统实际窗口状态不同步时“什么都不发”而唤不出来。
     fn show_panel(&mut self, ctx: &egui::Context) {
         self.hidden = false;
+        self.hidden_lost_focus = false;
         self.collapsed = false;
         self.last_active = Instant::now();
         self.last_shown = Instant::now();
@@ -559,7 +563,20 @@ impl App {
             ));
         } else {
             self.hidden = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.hidden_lost_focus = false;
+            // 不使用 Visible(false)：窗口一旦对系统完全不可见，就不会再收到
+            // 重绘事件，主循环休眠，全局快捷键永远无人处理（表现为“取消
+            // 边缘收纳后隐藏就再也唤不出来”）。改为缩到 1px 并移到屏幕外，
+            // 视觉上等同于完全隐藏，但事件循环照常运行，快捷键随时可唤回。
+            let monitor = self.monitor_size(ctx);
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::Normal,
+            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                monitor.x + 200.0,
+                monitor.y + 200.0,
+            )));
         }
     }
 
@@ -707,11 +724,9 @@ impl App {
         }
     }
 
-    /// 快捷键统一入口：窗口内按键（优先级最高，直接 consume）与
-    /// 全局热键合并处理。一次物理按键会产生多个事件（按下 + 松开，
-    /// 两条通道各一份），这里把一帧内的事件全部取走、最多只切换一次，
-    /// 并用 500ms 去抖。这样即使因为置顶 / 拖拽 / 删除后写盘造成掉帧，
-    /// “按下”与“松开”落在不同帧里，也不会被当成两次而“刚显示又隐藏”。
+    /// 快捷键统一入口：窗口内按键（优先级最高，直接 consume）与全局热键
+    /// 合并处理。一次物理按键会产生多个事件（按下 + 松开，两条通道各一份），
+    /// 这里把一帧内的事件全部取走、最多只切换一次，并用 500ms 去抖。
     fn poll_hotkeys(&mut self, ctx: &egui::Context) {
         let mut requested = false;
 
@@ -813,6 +828,20 @@ impl eframe::App for App {
         // 先处理窗口内的快捷键（优先级高于任何控件），
         // 保证鼠标在竖栏范围内 / 窗口获得焦点时按键也能显示隐藏
         self.poll_hotkeys(ctx);
+
+        // 完全隐藏时，点击 Windows 任务栏图标会重新获得焦点，据此唤回竖栏。
+        // 先确认它真的失去过焦点，避免刚隐藏就立刻弹回来。
+        if self.hidden {
+            let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
+            if focused {
+                if self.hidden_lost_focus {
+                    self.show_panel(ctx);
+                }
+            } else {
+                self.hidden_lost_focus = true;
+            }
+        }
+
         self.poll_toggle_file(ctx);
         self.tick_copied();
 
@@ -824,7 +853,9 @@ impl eframe::App for App {
             }
         }
 
-        if self.collapsed {
+        if self.hidden {
+            // 完全隐藏（已移出屏幕）：不绘制任何内容，只保持事件循环存活
+        } else if self.collapsed {
             sidebar::show_collapsed(ctx);
         } else {
             sidebar::show(self, ctx);
@@ -836,7 +867,9 @@ impl eframe::App for App {
         self.update_autohide(ctx);
         self.persist(false);
 
-        ctx.request_repaint_after(Duration::from_millis(120));
+        // 隐藏时降低唤醒频率，但绝不停，保证快捷键始终有人处理
+        let interval = if self.hidden { 200 } else { 120 };
+        ctx.request_repaint_after(Duration::from_millis(interval));
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
